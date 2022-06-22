@@ -1,0 +1,390 @@
+---
+title: "Fastest 100 metre times"
+author: "Aidan Bergsman and Campbell Miller"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: journal
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+    keep_md: true
+---
+
+```{r setup, include=FALSE}
+## This next line sets the default behaviour for all R chunks in the .Rmd document.
+## I recomend you take a look here: https://rmarkdown.rstudio.com/authoring_rcodechunks.html
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, error = TRUE, dpi=300)
+```
+
+## Background
+
+In class, we practiced webscraping with the Wikipedia page on the [Men's 100 metres world record progression](http://en.wikipedia.org/wiki/Men%27s_100_metres_world_record_progression). For this assignment, we're going to continue with a similar theme, except we won't only be limiting ourselves to world record times. The page that we're scraping will also have a few complications that require extra (or at least different) steps.
+
+Here is the webpage: [**All-time men's best 100m**](http://www.alltime-athletics.com/m_100ok.htm).
+
+<b>Note:</b> You are welcome to use the [women's all-time best 100m times](http://www.alltime-athletics.com/w_100ok.htm) if you prefer. However, please be aware that you may (will?) have to adjust some of the specific hints below. It will be become more obvious why once we get to the prediction section of the assignment.
+
+Now is good time to load any packages that you will be needing, as well as set your preferred plotting theme, etc.
+
+```{r libs, cache=F, message=F}
+## Load your packages here, e.g.
+pacman::p_load(dplyr, data.table, rvest, readr, lubridate, ggplot2, stargazer, sandwich, rnaturalearth, sf, leaflet, ggthemes)
+```
+
+## 1) Read in the data
+
+Take a look at the [webpage](http://www.alltime-athletics.com/m_100ok.htm) in your browser. We only want the information contained in the main table at the top (i.e. ignore the rolling starts, manual timing, etc.) Read this table into R and call the resulting object `m100_wp`.
+
+*Hint: In class, we practiced identifying the correct HMTL elements with CSS selectors and SelectorGadget. However, you will almost certainly find it easier / more precise to scrape the table in this example via its XPath. Use your browser's "Inspect" functionality to find and copy over this XPath. Remember to specify the "xpath" argument (instead of the default "css") when pulling this information into R, i.e. `rvest::html_element(xpath = "XPATH_HERE")`.*
+
+```{r}
+# read in webpage
+webpage = read_html("http://www.alltime-athletics.com/m_100ok.htm")
+```
+
+## 2) Parse into an R object
+
+### 2.1) Try parsing with `rvest::html_table()`
+
+With the Wikipedia example from class, we were able to parse an HTML table into a data frame simply by using `rvest::html_table()`. What happens if you try that here?
+
+```{r}
+# extract table from webpage using XPath
+m100_wp = 
+  webpage %>%
+  html_element(xpath = "/html/body/center[3]/pre/text()[1]") %>%
+  html_table()
+# print result 
+m100_wp
+```
+
+**When using `html_table()`, we get an empty data frame**
+
+### 2.2. Try parsing with `rvest::html_text()`
+
+Unfortunately, the HTML object that we've read into R is old-school text. Luckily, we can still extract this text pretty easily into an R string. Do that and name the resulting object `m100_text`. Show me the first 1000 characters.
+
+*Hint: The `head()` function works by elements, not characters. So you'll need some other function to show the first 1000 characters.*
+
+```{r}
+# parse data using html_text() function
+m100_text = 
+  webpage %>% html_element(xpath = "/html/body/center[3]/pre/text()[1]") %>%
+  html_text()
+# use substr() function to print first 1000 characters in string
+substr(m100_text,1,1000)
+```
+
+## 3) Convert to a data frame
+
+### 3.1 ) Read as data frame
+
+At this point, we basically have one loooong string that we need to convert to a data frame. Please do this and assign the resulting object as `m100`. Don't worry about specifying column names or types yet.
+
+*Hint: Look at the structure of the original [page](http://www.alltime-athletics.com/m_100ok.htm). We call this "fixed width file" format. The `readr` package has nice functionality for importing this kind of format...*
+
+```{r}
+# convert character string to data frame using read_fwf() function from readr package
+m100 = read_fwf(m100_text)
+```
+
+### 3.2) Inspect and fix (if needed)
+
+What does your resulting `m100` data frame look like? Have the columns be assigned consistently? (E.g. Is the final column always a date, even if it isn't encoded as a date type? Do athlete names always occupy one column, or are they split inconsistently across columns?)
+
+Depending on the functions and arguments that you used in the previous question, you may need to do some additional work to fix the resulting data frame, For example, you should only have **9 columns**. If that isn't the case, inspect your dataset and figure out where the problem lies. Fix this issue as best you can, so that you only have nine columns.
+
+*Hint: Print the first 10 rows and last 10 rows of your data frame to screen so that I can see it too.*
+
+```{r}
+head(m100)
+tail(m100)
+```
+
+**The data frame has 9 columns, just as it should. All the data appear to be in their appropriate columns as well. The last row for some reason only contains NA values, so we will remove it. We double checked the website, and this row is completely extraneous, as the last row should be for the runner "Christian Coleman".**
+
+```{r}
+# remove last NA row
+m100 <- m100[-c(3692),]
+# print last 10 rows to show removal of NA row
+tail(m100)
+```
+
+**Now the data frame has been updated with the dropped last row, which was extraneous and did not contain any information. The last row is now for "Christian Coleman", who is the last runner listed on the webpage.**
+
+### 3.3) Assign column names
+
+You should now (hopefully) have nine columns. Assign them the following names: `c("rank", "time", "windspeed", "athlete", "country", "dob", "race_rank", "location", "date")`.
+
+```{r}
+# add column names to data frame
+colnames(m100) =  c("rank", "time", "windspeed", "athlete", "country", "dob", "race_rank", "location", "date")
+```
+
+### 3.4 Convert columns to correct classes
+
+Finally, convert your columns to the correct classes (i.e. types). Date columns should be converted to dates, numeric columns should be converted to numeric, etc.
+
+```{r}
+#when converting the time column to numeric, the values that are labelled with letters ie "9.76A" get pushed to na since the letter cannot be converted to numeric
+#use gsub to removed the letters from that column
+m100$time <- gsub("([a-zA-Z])","", m100$time)
+#when converting the race_rank column to numeric, there are values that have notation such as "1q1"
+#this will cause na's to be coerced 
+#more difficult than the previous gsub since sometimes there is a number after the letter, however since the first number is all that matters since it shows what rank they are
+#we can use sub to only show the first value in the column
+m100$race_rank <- sub("^(\\w).*$", "\\1", m100$race_rank)
+#convert variables to numeric that need it
+m100 = m100 %>% 
+  mutate(time = as.numeric(time)) %>%
+  mutate(windspeed = as.numeric(windspeed)) %>%
+  mutate(race_rank = as.numeric(race_rank))
+#when converting windspeed to numeric, the zero values are coerced into na
+#this turns them back into the value of 0
+m100$windspeed[is.na(m100$windspeed)] <- 0
+#to use the as.IDate function in datatable, convert m100 to data table
+m100 = m100 %>%
+  as.data.table()
+#gsub the dots in dob to hyphens to allow for a date function to work
+m100$dob <- gsub('\\.', '-', m100$dob)
+#this allows us to use "%d-%m-%y" as the format for dob in the date functions
+#convert the dob column to a date variable
+m100[, dob := as.IDate(dob, '%d-%m-%y')]
+#in parts some dates with the century ahead so set ifelse to change format of the date to have the century begin with 19 if the date is above the current date
+m100$dob <- 
+  as.Date(ifelse(m100$dob > Sys.Date(), format(m100$dob, "19%y-%m-%d"), format(m100$dob)))
+#gsub the dots in date to hyphens to allow for a date function to work of "%d-%m-%y" 
+m100$date <- gsub('\\.', '-', m100$date)
+#convert date to a date variable, big Y for full year, little y for 2 digits of the year
+m100[, date := as.IDate(date, '%d-%m-%Y')]
+#check the classes are correct 
+class(m100$rank)
+class(m100$time)
+class(m100$windspeed)
+class(m100$athlete)
+class(m100$country)
+class(m100$dob)
+class(m100$race_rank)
+class(m100$location)
+class(m100$date)
+```
+
+## 4) Plot the data
+
+Plot the data, with the race date on the x-axis and time on the y-axis. Highlight Usain Bolt's times in red.
+
+```{r}
+#create a dataframe with just usain's times
+Usain <- m100 %>%
+  filter(athlete == "Usain Bolt")
+#plot while including the usain dataframe
+m100 %>%
+  ggplot(aes(x = date, y = time)) +
+  geom_point(alpha = 0.3) +
+  geom_point(data = Usain,
+             aes(x = date, y = time),
+             color = 'red',
+             size = 3,
+             alpha = 0.7) +
+  ggtitle("Men's 100 Meter Sprint Times with Usain Bolt Highlighted - Scatter Plot") +
+  xlab("Date of the Race") +
+  ylab("Time to Complete (secs)")
+#show trends using scatterplot and line plot
+m100 %>%
+  ggplot(aes(x = date, y = time)) +
+  geom_line() +
+  geom_line(data = Usain,
+             aes(x = date, y = time),
+             color = 'red',
+             size = 1) +
+  ggtitle("Men's 100 Meter Sprint Times with Usain Bolt Highlighted - Line Graph") +
+  xlab("Date of the Race") +
+  ylab("Time to Complete (secs)")
+  
+```
+
+## 5) Subset to fastest times per year
+
+It's hard to fit a sensible model to the above data. What might make more sense is to think of 100 metre times as following some kind of (approximately) deterministic process over the years. Subset the data to the fastest time recorded in each year. Call this new data frame `m100_yr` and then repeat the plot above, again highlighting Usain Bolt's times.
+
+```{r}
+#make a new dataframe with subsetted data
+m100_yr <- m100 
+#the below code changes date from Idate to date,
+m100_yr <- m100_yr %>%
+  mutate(date = as.Date(date))
+#the below code makes a column year that is just the year from the date variable, I figure this will be helpful when subsetting the fastest time in each year
+m100_yr$date <- as.Date(m100_yr$date, '%Y-%m-%d')
+m100_yr <- m100_yr %>%
+  mutate(year = as.numeric(format(m100_yr$date, '%Y')))
+#makes a column mintime for that for each year has the fastest time 
+m100_yr <- m100_yr %>%
+  group_by(year) %>%
+  mutate(mintime = min(time))
+# make separate usain bolt data set
+Usain1=m100_yr %>% group_by(athlete, year) %>% filter(athlete=='Usain Bolt')
+#graph the time to finish race to year, highlight usain bolts fastest times
+m100_yr %>%
+  ggplot(aes(x = year, y = mintime)) +
+  geom_point() +
+  geom_point(data = Usain1,
+             aes(x = year, y = mintime),
+             color = 'red',
+             size = 3) +
+  ggtitle("Fastest Men's 100 Meter Sprint Times with Usain Bolt Highlighted") +
+  xlab("Year of the Race") +
+  ylab("Time to Complete (secs)")
+```
+
+## 6) Modeling and prediction
+
+Imagine that you have been transported back to the year **2005**. You are tasked with fitting a model of year-best 100m times up until that point. Importantly, your model will also be used to predict the trajectory of future 100m times.
+
+### 6.1) Fit a model
+
+Start by fitting a simple regression model of your choice, using data that would have been available to you then (you can include 2005). You are free to use whatever specification you prefer, but please:
+
+-   Be explicit by writing the model down.[^1] The model doesn't have to be complicated, but I want you to justify your choice of functional form and included variables. This includes why some variables might not have predictive power / be statistically significant.
+-   Show me the actual regression results in a nicely-formatted table.
+
+[^1]: Use `$$` signs to demarcate LaTeX equations in R Markdown.
+
+*Hint: I'd advise excluding data from before 1975, since we don't have consecutive or consistent records before then.*
+
+```{r, results='asis'}
+#filter data to the right dates using m100_yr df (to get mintime var in there)
+m100_fit <- m100_yr %>%
+  filter(date >= "1975-01-01") %>%
+  filter(date <= "2005-12-31")
+#run the regression (use mintime bc we only care about the fastest runners)
+reg_pred <- lm(mintime ~  I(year), data = m100_fit)
+#robust standard error
+reg_se <- sqrt(diag(vcovHC(reg_pred, type = "HC3")))
+stargazer(reg_pred, se = list(reg_se), type = 'html', title = ("Prediction Model for Mens 100 Meter"), covariate.labels = ("Year"), dep.var.labels = ("Estimated Minimum Time"))
+```
+
+**The regression equation for the model is** $$mintime = 𝝱(year) + 𝝴$$. **We Decided to use year to predict mintime values because, according to the graph for question 5, there is a clear downward trend over time for fastest running times. As a result, we believe that the year someone runs in is highly predictive of how low of a time they can run.**
+
+### 6.2) Prediction
+
+Fast forward to the present day. Given your model and the available data in 2005, what year would you have predicted humanity reaching the current world record time of 9.58 seconds? How does this compare with the year that Usain Bolt actually set it (i.e. 2009). What do you make of this?
+
+```{r}
+# make testing data set with years after 2005 to predict with
+m100_test = m100_yr %>% filter(date >= "2006-01-01")
+# apply model to data after 2005 to obtain predictions
+preds = predict(reg_pred, newdata = m100_test)
+# create new df with date/times from test data and predictions
+time_vs_preds = data.frame(time = m100_test$mintime,
+                     date = m100_test$date,
+                     prediction = preds)
+# sort df by predictions and print to see fastest prediction time
+time_vs_preds %>% arrange(prediction) %>% head(n=1)
+# Use model to calculate when the fastest time would be achieved
+(reg_pred$coefficients[1]-9.58)/-reg_pred$coefficients[2]
+```
+
+**the fastest 100 meter dash time our model predicts give our data is a time of 9.71 seconds in 2022, meaning that our model did not predict the world record time would have been set yet by any runner. This means that our model did not have enough data after 2005 with which to predict on to get to the world record time, meaning that if Usain Bolt had not set the record in 2009, it would not be set to this day according to our model. Instead, the model predicts it would be set sometime in the future, in the year 2043 to be exact. We calculated this value by substituting the record time, 9.58, into our regression model and solving for the year it would be achieved in. This ultimately makes more sense after referencing the graph in section 5 and noting that the trend for the data points from runners other than Usain Bolt is flatter and would extend beyond 2022 before reaching the time of 9.58 seconds.**
+
+### 6.3) Plot your results
+
+Provide a visual depiction of your prediction model. I basically want you to repeat your earlier plot from Question 4, but now with a (95 percent) prediction envelope. The prediction envelope should extend through both the "fitted" (\<= 2005) *and* "predicted" (2006--present) data periods. Make sure that these two periods are clearly demarcated in your plot.
+
+*Hint: geom_smooth() isn't going to help you here because you need to predict out of sample.*
+
+```{r}
+# run model predictions from all data
+lm_all_preds = predict(reg_pred, newdata = m100_yr, interval = 'confidence')
+# add predictions to df
+m100_yr = cbind(m100_yr,lm_all_preds)
+# plot with all times
+ggplot(data = m100_yr, aes(x = date, y = time)) + 
+  geom_point(data=m100_fit, color = "tomato1", alpha = 0.25) +
+  geom_point(data = m100_test, alpha = 0.25, color = "turquoise3") +
+  geom_point(data = Usain, color = "purple") +
+  labs(title = "Prediction Model with all Times, Usain Bolt Highlighted",
+       subtitle = "95% confidence interval in black, model predictions are green line",
+       caption = "Red points are from 1975-2005, blue points are from 2006-2022, purple points are Usain Bolt") +
+  xlab("Date") +
+  ylab("Running Time") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr ), 
+              fill = "black", alpha = 0.4)  +
+  geom_line(aes(y=fit), color = "green",size = 1, alpha = 0.75) +
+  theme_pander() 
+# plot of model with fastest times data points
+m100_yr %>%
+  ggplot(aes(x = year, y = mintime)) +
+  geom_point(size = 3, alpha = 0.3) +
+  geom_point(data = Usain1,
+             aes(x = year, y = mintime),
+             color = 'red',
+             size = 3) +
+  ggtitle("Prediction Model with Fastest Times, Usain Bolt Highlighted") +
+  xlab("Year of the Race") +
+  ylab("Time to Complete (secs)") +
+  geom_vline(xintercept = 2006, size = 2) +
+  labs(caption = "Vertical line splits training data (left) from testing data (right). Prediction model in blue with 95% confidence interval") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr ),
+              fill = "turquoise4", alpha = 0.4) +
+  geom_line(aes(y=fit), color = "blue", size = 1, alpha = 0.7) +
+  theme_pander()
+```
+
+## 7) Map
+
+### 7.1 Static map
+
+Finally, go back to your original `m100` data frame, which contains all the data (i.e. not just the fastest time in each year). I want you to give me a sense of athletic achievement by country (including duplicate observations for the same athlete). Plot a world map, with a colour fill proportional to the number of fastest times that have been contributed by athletes of each country.
+
+*Hint: Use the `sf`-compatible "countries" data frame from the `rnaturalearth` package that I showed you in the spatial lecture. This will come with a column of "iso_a3" country codes that you can match (i.e. join) to the "country" column of the `m100` data frame. There will likely be some mismatches because of inconsistencies in the ISO codes across these data frames. I won't be too strict about this, though you may find the `countrycode::countrycode()` function a helpful alternative.*
+
+```{r}
+# create new column in m100 that is fastest times by country
+m100 = m100 %>% group_by(country) %>% mutate(n_fast = n())
+# create df for countries data from rnaturalearth package
+countries = ne_countries(returnclass = "sf")
+# rename is0_a3 column as "country" for easier merging
+countries = countries %>% mutate(country = iso_a3) %>% st_transform(8857)
+# join countries df with m100 . not sure if I merged this right
+merged_df = full_join(m100, countries, by = "country")
+# plot the world
+ggplot(merged_df) + geom_sf(mapping=aes(fill = n_fast, 
+                                         geometry=geometry), 
+                             color = "gray10", stat="sf") +
+  scale_fill_viridis_c(name="Number of Athletes", option="magma",
+                       na.value='grey85', trans='log',
+                       breaks=scales::log_breaks(n=5, base=10),
+                       labels=scales::comma) +
+  ggtitle("Fastest Mens 100 Meter Athletes by Country") 
+```
+
+### 7.2. Interactive map
+
+A major downside of the above static map is that some powerhouses of world athletics are geographically tiny nations in the Caribbean, which are very hard to see. One way to overcome this is to plot an interactive map using **leaflet** or one of the derivative packages that we discussed in the spatial lecture.
+
+
+
+
+```{r}
+merged_df <- sf::st_as_sf(merged_df)
+col_pal = colorNumeric(palette = 'viridis', domain = merged_df$n_fast)
+st_transform(merged_df,"+init=epsg:4326") %>% 
+  leaflet()%>%
+  addTiles() %>%
+  addPolygons(stroke = F, 
+              smoothFactor = 0.2, 
+              fillOpacity = 0.1, 
+              fillColor = ~col_pal(n_fast), 
+              popup = ~paste0(name_long,"<br>", 
+                              "Number of Fastest Athletes:",
+                              n_fast)) %>%
+  addLegend(
+    "bottomright",
+    pal = col_pal,
+    values = ~n_fast,
+    title = "Numer of Fastest Athletes",
+    opacity = 1
+  ) 
+```
